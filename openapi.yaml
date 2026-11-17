@@ -1,0 +1,1356 @@
+openapi: 3.1.0
+info:
+  title: ДомТех API
+  version: 1.2.0
+  description: |
+    REST API веб-застосунку інтернет-магазину побутової техніки «ДомТех» (SRS v1.2).
+    Сесія — HttpOnly cookie `token` на 7 діб; запити з фронтенду — з `credentials: 'include'`.
+    Гроші передаються рядками з двома знаками після крапки (`"14899.00"`).
+    Помилки мають єдиний формат `{ "error": { "code", "message", "fields"?, "details"? } }`.
+servers:
+  - url: /api
+tags:
+  - name: Автентифікація
+  - name: Профіль
+  - name: Каталог
+  - name: Кошик
+  - name: Замовлення клієнта
+  - name: Замовлення (адміністратор)
+  - name: Товари (адміністратор)
+  - name: Категорії (адміністратор)
+  - name: Виробники (адміністратор)
+  - name: Клієнти (адміністратор)
+  - name: Імпорт
+security: []
+
+paths:
+  /auth/register:
+    post:
+      tags: [Автентифікація]
+      summary: Зареєструватися (UC-05)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201':
+          description: Обліковий запис створено, cookie сесії встановлено
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /auth/login:
+    post:
+      tags: [Автентифікація]
+      summary: Увійти (UC-06)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: Вхід виконано, cookie сесії встановлено
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '401': { description: 'INVALID_CREDENTIALS — неправильний email або пароль (також для видаленого запису)', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '403': { description: 'ACCOUNT_BLOCKED — обліковий запис заблоковано', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '429': { description: 'TOO_MANY_ATTEMPTS — 5 невдалих спроб за 15 хв', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /auth/logout:
+    post:
+      tags: [Автентифікація]
+      summary: Вийти (UC-16)
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+  /auth/me:
+    get:
+      tags: [Автентифікація]
+      summary: Поточний користувач
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200':
+          description: Користувач сесії
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /profile:
+    get:
+      tags: [Профіль]
+      summary: Профіль користувача (UC-07)
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200': { description: Профіль, content: { application/json: { schema: { $ref: '#/components/schemas/UserResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      tags: [Профіль]
+      summary: Змінити ПІБ, телефон, адресу (лише Клієнт)
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                fullName: { type: string, minLength: 2, maxLength: 100 }
+                phone: { type: string, example: '+380671234567' }
+                defaultAddress: { type: [string, 'null'], minLength: 5, maxLength: 200 }
+      responses:
+        '200': { description: Оновлений профіль, content: { application/json: { schema: { $ref: '#/components/schemas/UserResponse' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /profile/password:
+    post:
+      tags: [Профіль]
+      summary: Змінити свій пароль; сесії на інших пристроях завершуються
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 8, maxLength: 72 }
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /categories:
+    get:
+      tags: [Каталог]
+      summary: Дерево видимих категорій
+      responses:
+        '200':
+          description: Категорії двох рівнів
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/CategoryNode' } }
+  /categories/{slug}/filters:
+    get:
+      tags: [Каталог]
+      summary: Фільтри категорії (UC-01)
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Фільтри, content: { application/json: { schema: { $ref: '#/components/schemas/CategoryFilters' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /products:
+    get:
+      tags: [Каталог]
+      summary: Знайти товар (UC-01)
+      description: |
+        Некоректні параметри фільтрів ігноруються. Фільтр характеристики — `attr[ID]=…`:
+        число `10..50` (будь-яка межа необов’язкова), перелік `Скло,Пластик`, так/ні `true`.
+      parameters:
+        - { name: category, in: query, schema: { type: string }, description: slug категорії (з підкатегоріями) }
+        - { name: q, in: query, schema: { type: string, minLength: 2, maxLength: 100 }, description: 'Пошук у назві й артикулі; лише українські чи латинські літери, цифри, розділові знаки' }
+        - { name: manufacturer, in: query, schema: { type: string, example: '1,2' } }
+        - { name: priceMin, in: query, schema: { type: number } }
+        - { name: priceMax, in: query, schema: { type: number } }
+        - { name: inStock, in: query, schema: { type: string, enum: ['true'] } }
+        - { name: sort, in: query, schema: { type: string, enum: [default, price_asc, price_desc, newest] } }
+        - { $ref: '#/components/parameters/Page' }
+      responses:
+        '200':
+          description: Сторінка товарів
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageMeta'
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/ProductListItem' } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /products/{slug}:
+    get:
+      tags: [Каталог]
+      summary: Переглянути відомості про товар (UC-02)
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Картка товару, content: { application/json: { schema: { $ref: '#/components/schemas/ProductCard' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cart/validate:
+    post:
+      tags: [Кошик]
+      summary: Звірити кошик з актуальними даними (UC-03)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items: { type: array, maxItems: 50, items: { $ref: '#/components/schemas/CartItemInput' } }
+      responses:
+        '200': { description: Результат звірки, content: { application/json: { schema: { $ref: '#/components/schemas/CartValidation' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /orders:
+    post:
+      tags: [Замовлення клієнта]
+      summary: Оформити замовлення (UC-04)
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrderCreate' }
+      responses:
+        '201': { description: Замовлення створено, content: { application/json: { schema: { $ref: '#/components/schemas/OrderRef' } } } }
+        '200': { description: Повтор з тим самим clientOrderId — повернуто наявне замовлення, content: { application/json: { schema: { $ref: '#/components/schemas/OrderRef' } } } }
+        '400': { description: 'VALIDATION_ERROR або CART_EMPTY', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 'CART_CHANGED — details містить [{productId, issue, currentPrice}]', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    get:
+      tags: [Замовлення клієнта]
+      summary: Мої замовлення (UC-08)
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Page' }]
+      responses:
+        '200':
+          description: Сторінка замовлень від нових до старих
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageMeta'
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/ClientOrderListItem' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /orders/{id}:
+    get:
+      tags: [Замовлення клієнта]
+      summary: Деталі мого замовлення (UC-08)
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Замовлення, content: { application/json: { schema: { $ref: '#/components/schemas/OrderDetail' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /orders/{id}/cancel:
+    post:
+      tags: [Замовлення клієнта]
+      summary: Скасувати замовлення (UC-09)
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: [string, 'null'], maxLength: 500 }
+      responses:
+        '200': { description: Скасоване замовлення, content: { application/json: { schema: { $ref: '#/components/schemas/OrderDetail' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 'INVALID_STATUS_TRANSITION — замовлення вже зібране', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /admin/orders:
+    get:
+      tags: [Замовлення (адміністратор)]
+      summary: Усі замовлення магазину (UC-08)
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, example: 'new,processing' } }
+        - { name: dateFrom, in: query, schema: { type: string, format: date } }
+        - { name: dateTo, in: query, schema: { type: string, format: date } }
+        - { name: client, in: query, schema: { type: string }, description: 'ПІБ, email або телефон' }
+        - { name: number, in: query, schema: { type: string, example: DT-000123 } }
+        - { $ref: '#/components/parameters/Page' }
+      responses:
+        '200':
+          description: Сторінка замовлень
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageMeta'
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/AdminOrderListItem' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/orders/stale:
+    get:
+      tags: [Замовлення (адміністратор)]
+      summary: Список застарілих замовлень (FUN-12)
+      description: 'Статус не змінювався довше за строк: «Нове» — 24 год, «В обробці» — 48 год, «Зібране» — 72 год, «Відправлене» — 14 діб. Від найдавнішої зміни статусу.'
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Page' }]
+      responses:
+        '200':
+          description: Застарілі замовлення
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageMeta'
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/StaleOrder' } }
+  /admin/orders/{id}:
+    get:
+      tags: [Замовлення (адміністратор)]
+      summary: Деталі замовлення
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Замовлення, content: { application/json: { schema: { $ref: '#/components/schemas/AdminOrderDetail' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Замовлення (адміністратор)]
+      summary: Статус оплати й службова примітка (UC-10)
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                paymentStatus: { $ref: '#/components/schemas/PaymentStatus' }
+                adminNote: { type: [string, 'null'], maxLength: 1000 }
+      responses:
+        '200': { description: Замовлення, content: { application/json: { schema: { $ref: '#/components/schemas/AdminOrderDetail' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/orders/{id}/status:
+    patch:
+      tags: [Замовлення (адміністратор)]
+      summary: Змінити статус (UC-10) або скасувати (UC-09)
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fromStatus, toStatus]
+              properties:
+                fromStatus: { $ref: '#/components/schemas/OrderStatus' }
+                toStatus: { $ref: '#/components/schemas/OrderStatus' }
+                note: { type: [string, 'null'], maxLength: 500, description: Обов’язкова (від 3 символів) для cancelled }
+      responses:
+        '200': { description: Замовлення, content: { application/json: { schema: { $ref: '#/components/schemas/AdminOrderDetail' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 'INVALID_STATUS_TRANSITION або STATUS_CONFLICT', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /admin/products:
+    get:
+      tags: [Товари (адміністратор)]
+      summary: Товари магазину (UC-11)
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: 'Назва, артикул або код постачальника' }
+        - { name: category, in: query, schema: { type: string }, description: ID категорії або none }
+        - { name: manufacturer, in: query, schema: { type: integer } }
+        - { name: visibility, in: query, schema: { type: string, enum: [visible, hidden] } }
+        - { name: stock, in: query, schema: { $ref: '#/components/schemas/StockStatus' } }
+        - { name: source, in: query, schema: { type: string, enum: [katran, manual] } }
+        - { $ref: '#/components/parameters/Page' }
+      responses:
+        '200':
+          description: Сторінка товарів
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageMeta'
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/AdminProductListItem' } }
+    post:
+      tags: [Товари (адміністратор)]
+      summary: Додати товар
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductInput' }
+      responses:
+        '201': { description: Товар, content: { application/json: { schema: { $ref: '#/components/schemas/AdminProductDetail' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /admin/products/{id}:
+    get:
+      tags: [Товари (адміністратор)]
+      summary: Картка товару для редагування
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Товар, content: { application/json: { schema: { $ref: '#/components/schemas/AdminProductDetail' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Товари (адміністратор)]
+      summary: Редагувати, опублікувати чи приховати товар
+      description: Зміна категорії видаляє значення характеристик попередньої категорії. Для публікації (isVisible=true) потрібні категорія й ціна.
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductInput' }
+      responses:
+        '200': { description: Товар, content: { application/json: { schema: { $ref: '#/components/schemas/AdminProductDetail' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Товари (адміністратор)]
+      summary: Видалити товар (позначка видалення)
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/products/{id}/image:
+    post:
+      tags: [Товари (адміністратор)]
+      summary: Завантажити власне фото (JPEG, PNG, WebP до 5 МБ)
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201': { description: Товар, content: { application/json: { schema: { $ref: '#/components/schemas/AdminProductDetail' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+    delete:
+      tags: [Товари (адміністратор)]
+      summary: Видалити власне фото
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Товар, content: { application/json: { schema: { $ref: '#/components/schemas/AdminProductDetail' } } } }
+
+  /admin/categories:
+    get:
+      tags: [Категорії (адміністратор)]
+      summary: Дерево всіх категорій (UC-12)
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200':
+          description: Категорії
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/AdminCategoryNode' } }
+    post:
+      tags: [Категорії (адміністратор)]
+      summary: Створити категорію
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoryInput' }
+      responses:
+        '201': { description: Категорія, content: { application/json: { schema: { $ref: '#/components/schemas/AdminCategoryDetail' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/categories/{id}:
+    get:
+      tags: [Категорії (адміністратор)]
+      summary: Категорія з шаблоном характеристик
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Категорія, content: { application/json: { schema: { $ref: '#/components/schemas/AdminCategoryDetail' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Категорії (адміністратор)]
+      summary: Редагувати або приховати категорію
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoryInput' }
+      responses:
+        '200': { description: Категорія, content: { application/json: { schema: { $ref: '#/components/schemas/AdminCategoryDetail' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [Категорії (адміністратор)]
+      summary: Видалити категорію без товарів і підкатегорій
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/categories/{id}/attributes:
+    post:
+      tags: [Категорії (адміністратор)]
+      summary: Додати характеристику до шаблону
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttributeInput' }
+      responses:
+        '201': { description: Категорія, content: { application/json: { schema: { $ref: '#/components/schemas/AdminCategoryDetail' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /admin/categories/{id}/attributes/{attrId}:
+    patch:
+      tags: [Категорії (адміністратор)]
+      summary: Редагувати характеристику
+      description: Видалення варіантів переліку видаляє відповідні значення в товарах (removedValues). Тип характеристики зі значеннями змінити не можна (ATTRIBUTE_IN_USE).
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { name: attrId, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttributeInput' }
+      responses:
+        '200':
+          description: Категорія
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AdminCategoryDetail'
+                  - type: object
+                    properties:
+                      removedValues: { type: integer }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [Категорії (адміністратор)]
+      summary: Видалити характеристику разом зі значеннями
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { name: attrId, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: Категорія
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AdminCategoryDetail'
+                  - type: object
+                    properties:
+                      removedValues: { type: integer }
+
+  /admin/manufacturers:
+    get:
+      tags: [Виробники (адміністратор)]
+      summary: Виробники (UC-12)
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { $ref: '#/components/parameters/Page' }
+      responses:
+        '200':
+          description: Сторінка виробників
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageMeta'
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/Manufacturer' } }
+    post:
+      tags: [Виробники (адміністратор)]
+      summary: Додати виробника
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturerInput' }
+      responses:
+        '201': { description: Виробник, content: { application/json: { schema: { $ref: '#/components/schemas/Manufacturer' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /admin/manufacturers/{id}:
+    patch:
+      tags: [Виробники (адміністратор)]
+      summary: Змінити назву й країну
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturerInput' }
+      responses:
+        '200': { description: Виробник, content: { application/json: { schema: { $ref: '#/components/schemas/Manufacturer' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Виробники (адміністратор)]
+      summary: Видалити виробника без товарів
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '409': { description: MANUFACTURER_IN_USE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /admin/clients:
+    get:
+      tags: [Клієнти (адміністратор)]
+      summary: Клієнти (UC-13)
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: 'ПІБ, email або телефон' }
+        - { name: status, in: query, schema: { type: string, enum: [active, blocked, all], default: all } }
+        - { $ref: '#/components/parameters/Page' }
+      responses:
+        '200':
+          description: Сторінка клієнтів
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageMeta'
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/Client' } }
+    post:
+      tags: [Клієнти (адміністратор)]
+      summary: Додати клієнта; тимчасовий пароль надсилається на email і показується один раз
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, fullName, phone]
+              additionalProperties: false
+              properties:
+                email: { type: string, format: email }
+                fullName: { type: string }
+                phone: { type: string }
+                defaultAddress: { type: [string, 'null'] }
+      responses:
+        '201':
+          description: Клієнта створено
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  client: { $ref: '#/components/schemas/Client' }
+                  temporaryPassword: { type: string }
+                  emailSent: { type: boolean }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/clients/{id}:
+    get:
+      tags: [Клієнти (адміністратор)]
+      summary: Картка клієнта з замовленнями
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Клієнт, content: { application/json: { schema: { $ref: '#/components/schemas/ClientDetail' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Клієнти (адміністратор)]
+      summary: Редагувати email, ПІБ, телефон, адресу
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                email: { type: string, format: email }
+                fullName: { type: string }
+                phone: { type: string }
+                defaultAddress: { type: [string, 'null'] }
+      responses:
+        '200': { description: Клієнт, content: { application/json: { schema: { $ref: '#/components/schemas/ClientDetail' } } } }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [Клієнти (адміністратор)]
+      summary: Видалити клієнта (остаточно; замовлення зберігаються)
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/clients/{id}/reset-password:
+    post:
+      tags: [Клієнти (адміністратор)]
+      summary: Скинути пароль; сесії клієнта завершуються
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: Новий тимчасовий пароль
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  temporaryPassword: { type: string }
+                  emailSent: { type: boolean }
+  /admin/clients/{id}/block:
+    post:
+      tags: [Клієнти (адміністратор)]
+      summary: Заблокувати клієнта
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Клієнт, content: { application/json: { schema: { $ref: '#/components/schemas/ClientDetail' } } } }
+  /admin/clients/{id}/unblock:
+    post:
+      tags: [Клієнти (адміністратор)]
+      summary: Розблокувати клієнта
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Клієнт, content: { application/json: { schema: { $ref: '#/components/schemas/ClientDetail' } } } }
+
+  /admin/import:
+    post:
+      tags: [Імпорт]
+      summary: Імпортувати прайс Katran (UC-14)
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary, description: 'CSV або ZIP з одним CSV, до 20 МБ (зокрема розпакований CSV)' }
+      responses:
+        '200': { description: Звіт імпорту, content: { application/json: { schema: { $ref: '#/components/schemas/ImportReport' } } } }
+        '400': { description: INVALID_FILE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409': { description: IMPORT_IN_PROGRESS, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '413': { $ref: '#/components/responses/TooLarge' }
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: token
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+
+  responses:
+    Ok:
+      description: Успіх
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              ok: { type: boolean, const: true }
+    ValidationError:
+      description: VALIDATION_ERROR — fields містить повідомлення для кожного поля
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Unauthorized:
+      description: UNAUTHORIZED — потрібно увійти
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Forbidden:
+      description: FORBIDDEN або ACCOUNT_BLOCKED
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotFound:
+      description: NOT_FOUND
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Conflict:
+      description: EMAIL_TAKEN, CATEGORY_NOT_EMPTY, ATTRIBUTE_IN_USE тощо
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    TooLarge:
+      description: FILE_TOO_LARGE
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_ERROR
+                - CART_EMPTY
+                - CATEGORY_NOT_LEAF
+                - INVALID_FILE
+                - UNAUTHORIZED
+                - INVALID_CREDENTIALS
+                - FORBIDDEN
+                - ACCOUNT_BLOCKED
+                - NOT_FOUND
+                - EMAIL_TAKEN
+                - CART_CHANGED
+                - INVALID_STATUS_TRANSITION
+                - STATUS_CONFLICT
+                - CATEGORY_NOT_EMPTY
+                - MANUFACTURER_IN_USE
+                - ATTRIBUTE_IN_USE
+                - IMPORT_IN_PROGRESS
+                - FILE_TOO_LARGE
+                - TOO_MANY_ATTEMPTS
+                - INTERNAL_ERROR
+            message: { type: string }
+            fields: { type: object, additionalProperties: { type: string } }
+            details: { type: array, items: { $ref: '#/components/schemas/CartIssue' } }
+    Money: { type: string, pattern: '^\d+\.\d{2}$', example: '14899.00' }
+    PageMeta:
+      type: object
+      properties:
+        page: { type: integer }
+        pageSize: { type: integer, example: 20 }
+        total: { type: integer }
+    Role: { type: string, enum: [client, admin] }
+    StockStatus: { type: string, enum: [in_stock, expected, out_of_stock] }
+    OrderStatus: { type: string, enum: [new, processing, assembled, shipped, delivered, cancelled] }
+    DeliveryMethod: { type: string, enum: [pickup, courier, nova_poshta] }
+    PaymentMethod: { type: string, enum: [cash, card, cod, invoice] }
+    PaymentStatus: { type: string, enum: [unpaid, paid] }
+    AttributeType: { type: string, enum: [number, enum, bool, text] }
+    Ref:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        slug: { type: string }
+    ManufacturerRef:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        country: { type: [string, 'null'] }
+
+    RegisterRequest:
+      type: object
+      required: [email, password, fullName, phone]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        password: { type: string, minLength: 8, maxLength: 72, description: Щонайменше одна літера й одна цифра }
+        fullName: { type: string, minLength: 2, maxLength: 100 }
+        phone: { type: string, example: '0671234567', description: Нормалізується до +380XXXXXXXXX }
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        email: { type: string }
+        fullName: { type: string }
+        phone: { type: [string, 'null'] }
+        defaultAddress: { type: [string, 'null'] }
+        role: { $ref: '#/components/schemas/Role' }
+    UserResponse:
+      type: object
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+
+    CategoryNode:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        slug: { type: string }
+        children: { type: array, items: { $ref: '#/components/schemas/Ref' } }
+    CategoryFilters:
+      type: object
+      properties:
+        category:
+          allOf:
+            - $ref: '#/components/schemas/Ref'
+            - type: object
+              properties:
+                parent: { oneOf: [{ $ref: '#/components/schemas/Ref' }, { type: 'null' }] }
+        subcategories: { type: array, items: { $ref: '#/components/schemas/Ref' } }
+        manufacturers:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              name: { type: string }
+              productCount: { type: integer }
+        price:
+          oneOf:
+            - type: 'null'
+            - type: object
+              properties:
+                min: { $ref: '#/components/schemas/Money' }
+                max: { $ref: '#/components/schemas/Money' }
+        attributes:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              name: { type: string }
+              type: { $ref: '#/components/schemas/AttributeType' }
+              unit: { type: [string, 'null'] }
+              options: { type: array, items: { type: string } }
+              min: { type: [number, 'null'] }
+              max: { type: [number, 'null'] }
+    ProductListItem:
+      type: object
+      properties:
+        id: { type: integer }
+        slug: { type: string }
+        name: { type: string }
+        price: { $ref: '#/components/schemas/Money' }
+        stockStatus: { $ref: '#/components/schemas/StockStatus' }
+        imageUrl: { type: [string, 'null'] }
+    ProductCard:
+      type: object
+      properties:
+        id: { type: integer }
+        slug: { type: string }
+        name: { type: string }
+        sku: { type: [string, 'null'] }
+        price: { $ref: '#/components/schemas/Money' }
+        stockStatus: { $ref: '#/components/schemas/StockStatus' }
+        warrantyMonths: { type: [integer, 'null'] }
+        imageUrl: { type: [string, 'null'] }
+        description: { type: [string, 'null'] }
+        assemblyCountry: { type: [string, 'null'] }
+        assemblyCity: { type: [string, 'null'] }
+        manufacturer:
+          oneOf:
+            - type: 'null'
+            - type: object
+              properties:
+                id: { type: integer }
+                name: { type: string }
+                country: { type: [string, 'null'] }
+        category: { $ref: '#/components/schemas/CategoryFilters/properties/category' }
+        attributes:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              name: { type: string }
+              type: { $ref: '#/components/schemas/AttributeType' }
+              unit: { type: [string, 'null'] }
+              value: { type: [number, string, boolean] }
+
+    CartItemInput:
+      type: object
+      required: [productId, quantity]
+      properties:
+        productId: { type: integer }
+        quantity: { type: integer, minimum: 1, maximum: 99 }
+        price: { type: [string, number], description: 'Ціна, яку бачив користувач; розбіжність дає PRICE_CHANGED' }
+    CartIssue:
+      type: object
+      properties:
+        productId: { type: integer }
+        issue: { type: string, enum: [UNAVAILABLE, OUT_OF_STOCK, PRICE_CHANGED] }
+        currentPrice: { oneOf: [{ $ref: '#/components/schemas/Money' }, { type: 'null' }] }
+    CartValidation:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              productId: { type: integer }
+              name: { type: [string, 'null'] }
+              slug: { type: [string, 'null'] }
+              imageUrl: { type: [string, 'null'] }
+              price: { oneOf: [{ $ref: '#/components/schemas/Money' }, { type: 'null' }] }
+              stockStatus: { oneOf: [{ $ref: '#/components/schemas/StockStatus' }, { type: 'null' }] }
+              quantity: { type: integer }
+              lineTotal: { $ref: '#/components/schemas/Money' }
+              issue: { type: [string, 'null'], enum: [UNAVAILABLE, OUT_OF_STOCK, PRICE_CHANGED, null] }
+        total: { $ref: '#/components/schemas/Money' }
+        canCheckout: { type: boolean }
+
+    OrderCreate:
+      type: object
+      required: [clientOrderId, items, deliveryMethod, paymentMethod, contactName, contactPhone]
+      properties:
+        clientOrderId: { type: string, format: uuid, description: Генерує фронтенд один раз на оформлення (ідемпотентність) }
+        items:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            required: [productId, quantity, price]
+            properties:
+              productId: { type: integer }
+              quantity: { type: integer, minimum: 1, maximum: 99 }
+              price: { type: [string, number] }
+        deliveryMethod: { $ref: '#/components/schemas/DeliveryMethod' }
+        deliveryAddress: { type: [string, 'null'], description: 'courier — адреса (5–200); nova_poshta — місто й номер відділення або поштомата (3–200)' }
+        deliveryDate: { type: [string, 'null'], format: date, description: 'courier — від завтра до +14 днів' }
+        deliverySlot: { type: [string, 'null'], enum: ['09:00–12:00', '12:00–15:00', '15:00–18:00', '18:00–21:00', null] }
+        paymentMethod: { $ref: '#/components/schemas/PaymentMethod', description: 'pickup/courier — cash, card, invoice; nova_poshta — cod, invoice' }
+        contactName: { type: string }
+        contactPhone: { type: string }
+        comment: { type: [string, 'null'], maxLength: 1000 }
+    OrderRef:
+      type: object
+      properties:
+        id: { type: integer }
+        number: { type: string, example: DT-000123 }
+    ClientOrderListItem:
+      type: object
+      properties:
+        id: { type: integer }
+        number: { type: string }
+        createdAt: { type: string, format: date-time }
+        itemsCount: { type: integer }
+        total: { $ref: '#/components/schemas/Money' }
+        status: { $ref: '#/components/schemas/OrderStatus' }
+        paymentStatus: { $ref: '#/components/schemas/PaymentStatus' }
+    HistoryEntry:
+      type: object
+      properties:
+        fromStatus: { oneOf: [{ $ref: '#/components/schemas/OrderStatus' }, { type: 'null' }] }
+        toStatus: { $ref: '#/components/schemas/OrderStatus' }
+        note: { type: [string, 'null'] }
+        changedAt: { type: string, format: date-time }
+        changedBy:
+          description: Лише у відповіді для адміністратора
+          type: object
+          properties:
+            id: { type: integer }
+            fullName: { type: string }
+            role: { $ref: '#/components/schemas/Role' }
+    OrderDetail:
+      type: object
+      properties:
+        id: { type: integer }
+        number: { type: string }
+        createdAt: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/OrderStatus' }
+        statusChangedAt: { type: string, format: date-time }
+        total: { $ref: '#/components/schemas/Money' }
+        delivery:
+          type: object
+          properties:
+            method: { $ref: '#/components/schemas/DeliveryMethod' }
+            address: { type: [string, 'null'] }
+            date: { type: [string, 'null'], format: date }
+            slot: { type: [string, 'null'] }
+        payment:
+          type: object
+          properties:
+            method: { $ref: '#/components/schemas/PaymentMethod' }
+            status: { $ref: '#/components/schemas/PaymentStatus' }
+        contact:
+          type: object
+          properties:
+            name: { type: string }
+            phone: { type: string }
+        comment: { type: [string, 'null'] }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              productId: { type: integer }
+              name: { type: string }
+              slug: { type: [string, 'null'], description: null — товар більше не доступний у каталозі }
+              unitPrice: { $ref: '#/components/schemas/Money' }
+              quantity: { type: integer }
+              lineTotal: { $ref: '#/components/schemas/Money' }
+        history: { type: array, items: { $ref: '#/components/schemas/HistoryEntry' } }
+        canCancel: { type: boolean }
+    OrderClient:
+      type: object
+      properties:
+        id: { type: integer }
+        fullName: { type: string }
+        email: { type: string }
+    AdminOrderListItem:
+      type: object
+      properties:
+        id: { type: integer }
+        number: { type: string }
+        createdAt: { type: string, format: date-time }
+        client: { $ref: '#/components/schemas/OrderClient' }
+        total: { $ref: '#/components/schemas/Money' }
+        deliveryMethod: { $ref: '#/components/schemas/DeliveryMethod' }
+        paymentMethod: { $ref: '#/components/schemas/PaymentMethod' }
+        paymentStatus: { $ref: '#/components/schemas/PaymentStatus' }
+        status: { $ref: '#/components/schemas/OrderStatus' }
+    AdminOrderDetail:
+      allOf:
+        - $ref: '#/components/schemas/OrderDetail'
+        - type: object
+          properties:
+            client:
+              allOf:
+                - $ref: '#/components/schemas/OrderClient'
+                - type: object
+                  properties:
+                    phone: { type: [string, 'null'] }
+            adminNote: { type: [string, 'null'] }
+            allowedTransitions: { type: array, items: { $ref: '#/components/schemas/OrderStatus' } }
+    StaleOrder:
+      type: object
+      properties:
+        id: { type: integer }
+        number: { type: string }
+        createdAt: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/OrderStatus' }
+        statusChangedAt: { type: string, format: date-time }
+        hoursInStatus: { type: integer }
+        allowedHours: { type: integer }
+        deliveryMethod: { $ref: '#/components/schemas/DeliveryMethod' }
+        contact:
+          type: object
+          properties:
+            name: { type: string }
+            phone: { type: string }
+        client: { $ref: '#/components/schemas/OrderClient' }
+
+    AdminProductListItem:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        slug: { type: string }
+        sku: { type: [string, 'null'] }
+        supplierCode: { type: [string, 'null'] }
+        source: { type: string, enum: [katran, manual] }
+        imageUrl: { type: [string, 'null'] }
+        category: { oneOf: [{ $ref: '#/components/schemas/Ref' }, { type: 'null' }] }
+        manufacturer: { oneOf: [{ $ref: '#/components/schemas/ManufacturerRef' }, { type: 'null' }] }
+        price: { oneOf: [{ $ref: '#/components/schemas/Money' }, { type: 'null' }] }
+        supplierPrice: { oneOf: [{ $ref: '#/components/schemas/Money' }, { type: 'null' }] }
+        stockStatus: { $ref: '#/components/schemas/StockStatus' }
+        isVisible: { type: boolean }
+        updatedAt: { type: string, format: date-time }
+    AdminProductDetail:
+      allOf:
+        - $ref: '#/components/schemas/AdminProductListItem'
+        - type: object
+          properties:
+            warrantyMonths: { type: [integer, 'null'] }
+            description: { type: [string, 'null'] }
+            assemblyCountry: { type: [string, 'null'] }
+            assemblyCity: { type: [string, 'null'] }
+            ownImageUrl: { type: [string, 'null'] }
+            supplierImageUrl: { type: [string, 'null'] }
+            updatedFromSupplierAt: { type: [string, 'null'], format: date-time }
+            importUpdatesFields: { type: array, items: { type: string }, description: 'Поля, які перезаписує імпорт (DOC-03)' }
+            createdAt: { type: string, format: date-time }
+            attributes:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: integer }
+                  name: { type: string }
+                  type: { $ref: '#/components/schemas/AttributeType' }
+                  unit: { type: [string, 'null'] }
+                  options: { type: array, items: { type: string } }
+                  value: { type: [number, string, boolean, 'null'] }
+    ProductInput:
+      type: object
+      additionalProperties: false
+      description: Для POST обов’язкові name і stockStatus; для PATCH усі поля необов’язкові
+      properties:
+        name: { type: string, minLength: 3, maxLength: 200 }
+        stockStatus: { $ref: '#/components/schemas/StockStatus' }
+        categoryId: { type: [integer, 'null'] }
+        manufacturerId: { type: [integer, 'null'] }
+        manufacturerName: { type: string, description: Знаходить виробника за назвою без урахування регістру або створює нового }
+        sku: { type: [string, 'null'], maxLength: 100 }
+        price: { type: [string, number, 'null'] }
+        warrantyMonths: { type: [integer, 'null'], minimum: 0, maximum: 120 }
+        description: { type: [string, 'null'], maxLength: 5000 }
+        assemblyCountry: { type: [string, 'null'], maxLength: 60 }
+        assemblyCity: { type: [string, 'null'], maxLength: 60 }
+        isVisible: { type: boolean }
+        attributes:
+          type: array
+          items:
+            type: object
+            required: [attributeId, value]
+            properties:
+              attributeId: { type: integer }
+              value: { type: [number, string, boolean, 'null'], description: null або порожній рядок видаляє значення }
+
+    AdminCategory:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        slug: { type: string }
+        parentId: { type: [integer, 'null'] }
+        sortOrder: { type: integer }
+        isVisible: { type: boolean }
+        importPattern: { type: [string, 'null'] }
+        productCount: { type: integer }
+        attributeCount: { type: integer }
+    AdminCategoryNode:
+      allOf:
+        - $ref: '#/components/schemas/AdminCategory'
+        - type: object
+          properties:
+            children: { type: array, items: { $ref: '#/components/schemas/AdminCategory' } }
+    AdminCategoryDetail:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        slug: { type: string }
+        parent: { oneOf: [{ $ref: '#/components/schemas/Ref' }, { type: 'null' }] }
+        children: { type: array, items: { $ref: '#/components/schemas/Ref' } }
+        sortOrder: { type: integer }
+        isVisible: { type: boolean }
+        importPattern: { type: [string, 'null'] }
+        productCount: { type: integer }
+        attributes:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              name: { type: string }
+              type: { $ref: '#/components/schemas/AttributeType' }
+              unit: { type: [string, 'null'] }
+              options: { type: array, items: { type: string } }
+              isFilterable: { type: boolean }
+              sortOrder: { type: integer }
+              valuesCount: { type: integer, description: Кількість товарів зі значенням }
+    CategoryInput:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 2, maxLength: 60 }
+        slug: { type: string, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' }
+        parentId: { type: [integer, 'null'] }
+        sortOrder: { type: integer }
+        isVisible: { type: boolean }
+        importPattern: { type: [string, 'null'], maxLength: 200, description: Регулярний вираз для початку назви в прайсі }
+    AttributeInput:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 60 }
+        type: { $ref: '#/components/schemas/AttributeType' }
+        unit: { type: [string, 'null'], maxLength: 15 }
+        options: { type: array, minItems: 2, maxItems: 30, items: { type: string, maxLength: 50 } }
+        isFilterable: { type: boolean }
+        sortOrder: { type: integer }
+
+    Manufacturer:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        country: { type: [string, 'null'] }
+        productCount: { type: integer }
+    ManufacturerInput:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        country: { type: [string, 'null'], maxLength: 60 }
+
+    Client:
+      type: object
+      properties:
+        id: { type: integer }
+        email: { type: string }
+        fullName: { type: string }
+        phone: { type: [string, 'null'] }
+        defaultAddress: { type: [string, 'null'] }
+        status: { type: string, enum: [active, blocked] }
+        isBlocked: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        ordersCount: { type: integer }
+    ClientDetail:
+      allOf:
+        - $ref: '#/components/schemas/Client'
+        - type: object
+          properties:
+            orders:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: integer }
+                  number: { type: string }
+                  createdAt: { type: string, format: date-time }
+                  total: { $ref: '#/components/schemas/Money' }
+                  status: { $ref: '#/components/schemas/OrderStatus' }
+                  paymentStatus: { $ref: '#/components/schemas/PaymentStatus' }
+
+    ImportReport:
+      type: object
+      properties:
+        totalRows: { type: integer }
+        added: { type: integer }
+        updated: { type: integer }
+        skipped: { type: integer }
+        errorRows: { type: integer }
+        markedOutOfStock: { type: integer }
+        errors:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            properties:
+              line: { type: integer }
+              reason: { type: string }
